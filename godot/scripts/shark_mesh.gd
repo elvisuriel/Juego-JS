@@ -175,6 +175,7 @@ render_mode unshaded, cull_disabled;
 
 uniform float swim_speed = 3.0;
 uniform float phase = 0.0;
+uniform vec3 tint = vec3(1.0);
 
 varying vec3 v_normal;
 varying vec3 v_pos;
@@ -197,7 +198,7 @@ void fragment() {
 	vec3 light = normalize(vec3(0.35, 0.85, 0.45));
 	float d = dot(n, light);
 	float diff = v_fin > 0.5 ? abs(d) * 0.8 : max(d, 0.0);
-	vec3 col = COLOR.rgb * (0.38 + 0.72 * diff);
+	vec3 col = COLOR.rgb * tint * (0.38 + 0.72 * diff);
 
 	// Brillo húmedo
 	vec3 h = normalize(light + vec3(0.0, 0.0, 1.0));

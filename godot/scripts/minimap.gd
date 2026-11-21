@@ -14,6 +14,8 @@ var horse: Node2D
 var diamonds_root: Node2D
 var camera: Camera2D
 var sharks: Array = []
+var hideouts: Array = []
+var octopi: Array = []
 
 
 func _process(_delta: float) -> void:
@@ -38,6 +40,10 @@ func _draw() -> void:
 		var view_pos := camera.get_screen_center_position() - view_size / 2.0
 		draw_rect(Rect2(view_pos * k, view_size * k), VIEW, false, 1.5)
 
+	# Escondites (algas), siempre visibles
+	for h in hideouts:
+		draw_circle(h.global_position * k, Hideout.RADIUS * k, Color(0.25, 0.8, 0.5, 0.55))
+
 	# Radar
 	var hp := horse.global_position
 	draw_arc(hp * k, RADAR_RANGE * k, 0.0, TAU, 32, RADAR, 1.0)
@@ -52,5 +58,9 @@ func _draw() -> void:
 	for sh in sharks:
 		if is_instance_valid(sh) and sh.global_position.distance_to(hp) <= RADAR_RANGE:
 			draw_circle(sh.global_position * k, 3.5, SHARK)
+
+	for o in octopi:
+		if is_instance_valid(o) and o.global_position.distance_to(hp) <= RADAR_RANGE:
+			draw_circle(o.global_position * k, 3.5, Octopus.COLOR)
 
 	draw_circle(hp * k, 4.0, HORSE)
