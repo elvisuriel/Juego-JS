@@ -1,8 +1,4 @@
-node_modules/
-www/
 .DS_Store
-android/app/build/
-android/build/
-android/.gradle/
-android/local.properties
+node_modules/
 *.apk
+*.aab

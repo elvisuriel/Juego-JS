@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://assets/images/diamonds.png" id="1"]
+
+[sub_resource type="RectangleShape2D" id="Shape"]
+size = Vector2(70, 74)
+
+[node name="Diamond" type="Area2D" groups=["diamonds"]]
+monitoring = false
+
+[node name="Sprite" type="Sprite2D" parent="."]
+texture = ExtResource("1")
+hframes = 4
+
+[node name="Collision" type="CollisionShape2D" parent="."]
+shape = SubResource("Shape")

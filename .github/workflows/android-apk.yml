@@ -1,42 +1,78 @@
-name: Build APK Android
+name: Build APK Android (Godot)
 
 on:
   push:
     branches: [master]
+    paths: ["godot/**", ".github/workflows/android-apk.yml"]
   workflow_dispatch:
 
+env:
+  GODOT_VERSION: 4.7.2
+
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 17
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools build-tools;35.0.1 platforms;android-35"
 
-      - name: Instalar dependencias
-        run: npm ci
+      - name: Cache de Godot y plantillas
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}
 
-      - name: Copiar juego y sincronizar Android
-        run: npm run android:sync
-
-      - name: Compilar APK
-        working-directory: android
+      - name: Descargar Godot y plantillas de exportación
+        if: steps.cache-godot.outputs.cache-hit != 'true'
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          mkdir -p ~/godot-bin ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          curl -sSL -o g.zip $base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip
+          unzip -q g.zip -d ~/godot-bin && mv ~/godot-bin/Godot_v* ~/godot-bin/godot
+          curl -sSL -o t.tpz $base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz
+          unzip -q t.tpz -d tpl
+          mv tpl/templates/* ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+
+      - name: Configurar editor (SDK, Java y keystore de debug)
+        run: |
+          mkdir -p ~/.config/godot ~/keystores
+          keytool -genkeypair -keystore ~/keystores/debug.keystore -alias androiddebugkey \
+            -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US" -noprompt
+          minor=$(echo $GODOT_VERSION | cut -d. -f1,2)
+          cat > ~/.config/godot/editor_settings-${minor}.tres <<EOT
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_SDK_ROOT"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/keystores/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOT
+          sed -i 's/^          //' ~/.config/godot/editor_settings-${minor}.tres
+
+      - name: Exportar APK
+        working-directory: godot
+        run: |
+          mkdir -p build
+          ~/godot-bin/godot --headless --import || true
+          ~/godot-bin/godot --headless --export-debug "Android" build/Atlantis.apk
+          ls -la build
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
           name: Atlantis-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: godot/build/Atlantis.apk
