@@ -1,6 +1,6 @@
 # Atlantis 🐴🌊
 
-Mi primer juego: un caballito de mar que tiene que recoger 30 diamantes antes de que se acabe el tiempo.
+Mi primer juego: un caballito de mar que explora el fondo del mar buscando 30 diamantes antes de que se acabe el tiempo.
 
 ## Versiones
 
@@ -25,6 +25,9 @@ Para Play Store hay que firmarlo con una keystore de release.
 
 ## Cómo se juega
 
-- Toca la pantalla para empezar; el caballito sigue tu dedo.
+- Toca la pantalla para empezar.
+- **PC:** el caballito nada hacia donde apuntes con el mouse. **Celular:** mantén el dedo hacia donde quieres ir.
+- El mapa es grande y cambia en cada partida. El minimapa (abajo a la derecha) te muestra dónde estás y,
+  como un radar, los diamantes que tienes cerca.
 - 100 puntos por diamante + 50 por cada segundo que te sobre si los recoges todos.
 - Tu récord queda guardado.

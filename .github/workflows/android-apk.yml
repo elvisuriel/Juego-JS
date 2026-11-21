@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
     paths: ["godot/**", ".github/workflows/android-apk.yml"]
+  pull_request:
+    paths: ["godot/**", ".github/workflows/android-apk.yml"]
   workflow_dispatch:
 
 env:

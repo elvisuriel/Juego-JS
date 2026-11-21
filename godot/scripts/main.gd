@@ -1,20 +1,21 @@
 extends Node2D
-## Atlantis: recoge todos los diamantes antes de que se acabe el tiempo.
+## Atlantis: explora el mapa y recoge todos los diamantes antes de que
+## se acabe el tiempo.
 
+const WORLD_SIZE := Vector2(3400, 2000)
 const AMOUNT_DIAMONDS := 30
-const AMOUNT_BUBBLES := 30
-const GAME_TIME := 30
+const GAME_TIME := 75
 const POINTS_PER_DIAMOND := 100
 const POINTS_PER_SECOND_LEFT := 50
 const MAX_PLACEMENT_TRIES := 500
+const MIN_DIAMOND_GAP := 120.0
 const SAVE_PATH := "user://atlantis.cfg"
 
 const DiamondScene := preload("res://scenes/diamond.tscn")
-const BUBBLE_TEXTURES: Array[Texture2D] = [
-	preload("res://assets/images/booble1.png"),
-	preload("res://assets/images/booble2.png"),
-]
 const EXPLOSION_TEXTURE := preload("res://assets/images/explosion.png")
+const SHARK_TEXTURE := preload("res://assets/images/shark.png")
+const FISHES_TEXTURE := preload("res://assets/images/fishes.png")
+const MOLLUSK_TEXTURE := preload("res://assets/images/mollusk.png")
 
 enum State { WAITING, PLAYING, ENDED }
 
@@ -25,16 +26,15 @@ var caught := 0
 var high_score := 0
 var can_restart := false
 
-var _bubbles: Array[Sprite2D] = []
-var _mollusk_tween: Tween
+var _swimmers: Array[Sprite2D] = []
 
-@onready var bubbles_root: Node2D = $Bubbles
+@onready var world_map: WorldMap = $Map
+@onready var bubbles: Node2D = $Bubbles
+@onready var decor_root: Node2D = $Decor
 @onready var diamonds_root: Node2D = $Diamonds
 @onready var effects_root: Node2D = $Effects
-@onready var mollusk: Sprite2D = $Mollusk
-@onready var shark: Sprite2D = $Shark
-@onready var fishes: Sprite2D = $Fishes
 @onready var horse: Area2D = $Horse
+@onready var camera: Camera2D = $Horse/Camera
 @onready var game_timer: Timer = $GameTimer
 @onready var music: AudioStreamPlayer = $Music
 @onready var pop: AudioStreamPlayer = $Pop
@@ -42,7 +42,9 @@ var _mollusk_tween: Tween
 @onready var score_label: Label = $HUD/ScoreLabel
 @onready var timer_label: Label = $HUD/TimerLabel
 @onready var record_label: Label = $HUD/RecordLabel
+@onready var diamonds_label: Label = $HUD/DiamondsLabel
 @onready var start_label: Label = $HUD/StartLabel
+@onready var minimap: Control = $HUD/Minimap
 @onready var end_panel: Control = $HUD/EndPanel
 @onready var title_label: Label = $HUD/EndPanel/TitleLabel
 @onready var sub_label: Label = $HUD/EndPanel/SubLabel
@@ -56,8 +58,26 @@ func _ready() -> void:
 	if stream:
 		stream.loop = true
 
-	_spawn_bubbles()
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	world_map.generate(WORLD_SIZE, rng)
+	bubbles.setup(WORLD_SIZE)
+
+	horse.position = WORLD_SIZE / 2.0
+	horse.bounds = Rect2(Vector2.ZERO, WORLD_SIZE)
+	camera.limit_left = 0
+	camera.limit_top = 0
+	camera.limit_right = int(WORLD_SIZE.x)
+	camera.limit_bottom = int(WORLD_SIZE.y)
+	camera.reset_smoothing()
+
+	_spawn_decor()
 	_spawn_diamonds()
+
+	minimap.world_map = world_map
+	minimap.horse = horse
+	minimap.diamonds_root = diamonds_root
+	minimap.camera = camera
 
 	horse.diamond_caught.connect(_on_diamond_caught)
 	game_timer.timeout.connect(_on_timer_tick)
@@ -84,21 +104,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
-	var f := delta * 60.0  # 1.0 a 60 FPS
-
-	# El fondo se anima siempre
-	for bubble in _bubbles:
-		bubble.position.y -= bubble.get_meta("vel") * f
-		if bubble.position.y < -50.0:
-			bubble.position = Vector2(randf_range(1, 1140), 700)
-
-	shark.position.x -= 1.0 * f
-	if shark.position.x < -300.0:
-		shark.position.x = 1300.0
-
-	fishes.position.x += 0.3 * f
-	if fishes.position.x > 1300.0:
-		fishes.position.x = -300.0
+	var f := delta * 60.0
+	for s in _swimmers:
+		s.position.x += s.get_meta("vel") * f
+		if s.position.x < -400.0 or s.position.x > WORLD_SIZE.x + 400.0:
+			var from_left: bool = s.get_meta("vel") > 0.0
+			s.position.x = -350.0 if from_left else WORLD_SIZE.x + 350.0
+			s.position.y = randf_range(80, WORLD_SIZE.y - 80)
 
 
 # --- Flujo del juego -------------------------------------------------------
@@ -109,10 +121,6 @@ func _start_game() -> void:
 	start_label.hide()
 	game_timer.start()
 	music.play()
-
-	_mollusk_tween = create_tween().set_loops()
-	_mollusk_tween.tween_property(mollusk, "position:y", 0.0, 5.8).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	_mollusk_tween.tween_property(mollusk, "position:y", mollusk.position.y, 5.8).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 
 
 func _on_timer_tick() -> void:
@@ -150,8 +158,6 @@ func _finish_game(won: bool) -> void:
 	state = State.ENDED
 	horse.active = false
 	game_timer.stop()
-	if _mollusk_tween:
-		_mollusk_tween.kill()
 
 	var new_record := score > high_score
 	if new_record:
@@ -160,9 +166,9 @@ func _finish_game(won: bool) -> void:
 		_update_hud()
 
 	title_label.text = "¡GANASTE!" if won else "GAME OVER"
-	var sub := "PUNTOS: %d" % score
+	var sub := "PUNTOS: %d   ·   DIAMANTES: %d/%d" % [score, caught, AMOUNT_DIAMONDS]
 	if won:
-		sub += "  (bonus %ds)" % time_left
+		sub += "\nbonus %ds" % time_left
 	if new_record:
 		sub += "\n¡NUEVO RÉCORD!"
 	sub_label.text = sub
@@ -181,42 +187,65 @@ func _update_hud() -> void:
 	timer_label.text = str(time_left)
 	timer_label.modulate = Color(1, 0.33, 0.33) if time_left <= 10 else Color.WHITE
 	record_label.text = "RÉCORD: %d" % high_score
+	diamonds_label.text = "DIAMANTES: %d/%d" % [caught, AMOUNT_DIAMONDS]
 
 
 # --- Creación de elementos -------------------------------------------------
 
-func _spawn_bubbles() -> void:
-	for i in AMOUNT_BUBBLES:
-		var bubble := Sprite2D.new()
-		bubble.texture = BUBBLE_TEXTURES.pick_random()
-		bubble.centered = false
-		bubble.position = Vector2(randf_range(1, 1140), randf_range(0, 950))
-		bubble.scale = Vector2.ONE * (0.2 + randf())
-		bubble.modulate.a = 0.9
-		bubble.set_meta("vel", 0.2 + randf() * 2.0)
-		bubbles_root.add_child(bubble)
-		_bubbles.append(bubble)
+func _spawn_decor() -> void:
+	# Moluscos quietos que flotan suave
+	for i in 6:
+		var m := Sprite2D.new()
+		m.texture = MOLLUSK_TEXTURE
+		m.position = Vector2(randf_range(100, WORLD_SIZE.x - 100), randf_range(100, WORLD_SIZE.y - 100))
+		decor_root.add_child(m)
+		var tw := create_tween().set_loops()
+		tw.tween_property(m, "position:y", m.position.y - 40.0, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
+		tw.tween_property(m, "position:y", m.position.y, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
+
+	# Tiburones (van a la izquierda) y cardúmenes (a la derecha)
+	for i in 3:
+		_add_swimmer(SHARK_TEXTURE, -randf_range(1.2, 2.0))
+	for i in 5:
+		_add_swimmer(FISHES_TEXTURE, randf_range(0.4, 0.9))
+
+
+func _add_swimmer(texture: Texture2D, vel: float) -> void:
+	var s := Sprite2D.new()
+	s.texture = texture
+	s.position = Vector2(randf_range(0, WORLD_SIZE.x), randf_range(80, WORLD_SIZE.y - 80))
+	s.set_meta("vel", vel)
+	decor_root.add_child(s)
+	_swimmers.append(s)
 
 
 func _spawn_diamonds() -> void:
-	var horse_rect := _rect_centered(horse.position, Vector2(84, 156))
-	var placed: Array[Rect2] = []
+	var safe_zone := Rect2(horse.position - Vector2(250, 200), Vector2(500, 400))
+	var placed: Array[Vector2] = []
 
 	for i in AMOUNT_DIAMONDS:
 		var diamond: Area2D = DiamondScene.instantiate()
-		var s := 0.30 + randf()
+		var s := randf_range(0.5, 0.9)
 		diamond.scale = Vector2(s, s)
 		diamond.get_node("Sprite").frame = randi_range(0, 3)
 
-		var rect: Rect2
+		var pos := Vector2.ZERO
 		for t in MAX_PLACEMENT_TRIES:
-			diamond.position = Vector2(randi_range(50, 1050), randi_range(50, 600))
-			rect = _rect_centered(diamond.position, Vector2(81, 84) * s)
-			if not rect.intersects(horse_rect) and not placed.any(func(r: Rect2): return r.intersects(rect)):
-				break
+			pos = Vector2(randf_range(80, WORLD_SIZE.x - 80), randf_range(80, WORLD_SIZE.y - 80))
+			if safe_zone.has_point(pos):
+				continue
+			if placed.any(func(p: Vector2): return p.distance_to(pos) < MIN_DIAMOND_GAP):
+				continue
+			break
 
-		placed.append(rect)
+		diamond.position = pos
+		placed.append(pos)
 		diamonds_root.add_child(diamond)
+
+		# Un brillo suave para que se note al encontrarlo
+		var tw := diamond.create_tween().set_loops()
+		tw.tween_property(diamond, "scale", Vector2.ONE * s * 1.12, 0.6).set_trans(Tween.TRANS_SINE)
+		tw.tween_property(diamond, "scale", Vector2.ONE * s, 0.6).set_trans(Tween.TRANS_SINE)
 
 
 func _spawn_explosion(at: Vector2) -> void:
@@ -231,10 +260,6 @@ func _spawn_explosion(at: Vector2) -> void:
 	tw.tween_property(fx, "scale", Vector2.ONE * 0.4, 0.3).set_delay(0.3)
 	tw.tween_property(fx, "modulate:a", 0.0, 0.6)
 	tw.chain().tween_callback(fx.queue_free)
-
-
-func _rect_centered(center: Vector2, size: Vector2) -> Rect2:
-	return Rect2(center - size / 2.0, size)
 
 
 # --- Récord ----------------------------------------------------------------
