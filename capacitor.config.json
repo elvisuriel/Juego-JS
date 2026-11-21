@@ -1,0 +1,6 @@
+{
+  "appId": "cloud.codedrop.atlantis",
+  "appName": "Atlantis",
+  "webDir": "www",
+  "android": { "backgroundColor": "#000000" }
+}
