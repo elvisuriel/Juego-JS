@@ -1,4 +1,10 @@
-; Atlantis — port a Godot 4 del primer juego en Phaser
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
@@ -14,12 +20,7 @@ config/icon="res://icon.png"
 window/size/viewport_width=1136
 window/size/viewport_height=640
 window/stretch/mode="canvas_items"
-window/stretch/aspect="keep"
 window/handheld/orientation=4
-
-[input_devices]
-
-pointing/emulate_mouse_from_touch=true
 
 [rendering]
 

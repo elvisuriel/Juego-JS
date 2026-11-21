@@ -10,10 +10,13 @@ const POINTS_PER_SECOND_LEFT := 50
 const MAX_PLACEMENT_TRIES := 500
 const MIN_DIAMOND_GAP := 120.0
 const SAVE_PATH := "user://atlantis.cfg"
+const LIVES := 3
+const AMOUNT_SHARKS := 4
+const SHARK_SAFE_DISTANCE := 900.0   # no aparecen encima del caballito
 
 const DiamondScene := preload("res://scenes/diamond.tscn")
 const EXPLOSION_TEXTURE := preload("res://assets/images/explosion.png")
-const SHARK_TEXTURE := preload("res://assets/images/shark.png")
+const LivesScript := preload("res://scripts/lives.gd")
 const FISHES_TEXTURE := preload("res://assets/images/fishes.png")
 const MOLLUSK_TEXTURE := preload("res://assets/images/mollusk.png")
 
@@ -25,8 +28,14 @@ var time_left := GAME_TIME
 var caught := 0
 var high_score := 0
 var can_restart := false
+var lives := LIVES
+var end_reason := ""
 
 var _swimmers: Array[Sprite2D] = []
+var _sharks: Array[Shark] = []
+var _lives_view: Control
+var _flash: ColorRect
+var _hit_sound: AudioStreamPlayer
 
 @onready var world_map: WorldMap = $Map
 @onready var bubbles: Node2D = $Bubbles
@@ -73,11 +82,14 @@ func _ready() -> void:
 
 	_spawn_decor()
 	_spawn_diamonds()
+	_spawn_sharks()
+	_build_damage_ui()
 
 	minimap.world_map = world_map
 	minimap.horse = horse
 	minimap.diamonds_root = diamonds_root
 	minimap.camera = camera
+	minimap.sharks = _sharks
 
 	horse.diamond_caught.connect(_on_diamond_caught)
 	game_timer.timeout.connect(_on_timer_tick)
@@ -118,6 +130,8 @@ func _process(delta: float) -> void:
 func _start_game() -> void:
 	state = State.PLAYING
 	horse.active = true
+	for sh in _sharks:
+		sh.hunting = true
 	start_label.hide()
 	game_timer.start()
 	music.play()
@@ -157,6 +171,8 @@ func _finish_game(won: bool) -> void:
 		return
 	state = State.ENDED
 	horse.active = false
+	for sh in _sharks:
+		sh.hunting = false
 	game_timer.stop()
 
 	var new_record := score > high_score
@@ -166,7 +182,11 @@ func _finish_game(won: bool) -> void:
 		_update_hud()
 
 	title_label.text = "¡GANASTE!" if won else "GAME OVER"
-	var sub := "PUNTOS: %d   ·   DIAMANTES: %d/%d" % [score, caught, AMOUNT_DIAMONDS]
+	var sub := ""
+	if end_reason != "":
+		sub += end_reason + "
+"
+	sub += "PUNTOS: %d   ·   DIAMANTES: %d/%d" % [score, caught, AMOUNT_DIAMONDS]
 	if won:
 		sub += "\nbonus %ds" % time_left
 	if new_record:
@@ -188,6 +208,8 @@ func _update_hud() -> void:
 	timer_label.modulate = Color(1, 0.33, 0.33) if time_left <= 10 else Color.WHITE
 	record_label.text = "RÉCORD: %d" % high_score
 	diamonds_label.text = "DIAMANTES: %d/%d" % [caught, AMOUNT_DIAMONDS]
+	if _lives_view:
+		_lives_view.lives = lives
 
 
 # --- Creación de elementos -------------------------------------------------
@@ -203,9 +225,7 @@ func _spawn_decor() -> void:
 		tw.tween_property(m, "position:y", m.position.y - 40.0, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
 		tw.tween_property(m, "position:y", m.position.y, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
 
-	# Tiburones (van a la izquierda) y cardúmenes (a la derecha)
-	for i in 3:
-		_add_swimmer(SHARK_TEXTURE, -randf_range(1.2, 2.0))
+	# Cardúmenes de fondo (los tiburones van aparte, en 3D)
 	for i in 5:
 		_add_swimmer(FISHES_TEXTURE, randf_range(0.4, 0.9))
 
@@ -260,6 +280,75 @@ func _spawn_explosion(at: Vector2) -> void:
 	tw.tween_property(fx, "scale", Vector2.ONE * 0.4, 0.3).set_delay(0.3)
 	tw.tween_property(fx, "modulate:a", 0.0, 0.6)
 	tw.chain().tween_callback(fx.queue_free)
+
+
+# --- Tiburones y vidas ----------------------------------------------------
+
+func _spawn_sharks() -> void:
+	for i in AMOUNT_SHARKS:
+		var sh := Shark.new()
+		sh.horse = horse
+		sh.bounds = Rect2(Vector2.ZERO, WORLD_SIZE)
+		var pos := Vector2.ZERO
+		for t in MAX_PLACEMENT_TRIES:
+			pos = Vector2(randf_range(150, WORLD_SIZE.x - 150), randf_range(150, WORLD_SIZE.y - 150))
+			if pos.distance_to(horse.position) > SHARK_SAFE_DISTANCE:
+				break
+		sh.position = pos
+		sh.bitten.connect(_on_shark_bite)
+		# Por encima de los diamantes, por debajo del caballito
+		add_child(sh)
+		move_child(sh, horse.get_index())
+		_sharks.append(sh)
+
+
+func _build_damage_ui() -> void:
+	_lives_view = LivesScript.new()
+	_lives_view.max_lives = LIVES
+	_lives_view.position = Vector2(20, 84)
+	_lives_view.size = Vector2(140, 34)
+	$HUD.add_child(_lives_view)
+	_lives_view.lives = lives
+
+	# Destello rojo al recibir un mordisco
+	_flash = ColorRect.new()
+	_flash.color = Color(0.9, 0.05, 0.1, 0.0)
+	_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_flash.size = Vector2(1136, 640)
+	$HUD.add_child(_flash)
+	$HUD.move_child(_flash, 0)
+
+	_hit_sound = AudioStreamPlayer.new()
+	_hit_sound.stream = pop.stream
+	_hit_sound.pitch_scale = 0.45
+	_hit_sound.volume_db = 2.0
+	add_child(_hit_sound)
+
+
+func _on_shark_bite(shark: Shark) -> void:
+	if state != State.PLAYING or horse.is_invulnerable():
+		return
+
+	lives -= 1
+	horse.hurt(shark.global_position)
+	shark.retreat()
+	_hit_sound.play()
+	_update_hud()
+
+	_flash.color.a = 0.45
+	create_tween().tween_property(_flash, "color:a", 0.0, 0.5)
+	_shake_camera()
+
+	if lives <= 0:
+		end_reason = "¡TE ATRAPÓ UN TIBURÓN!"
+		_finish_game(false)
+
+
+func _shake_camera() -> void:
+	var tw := create_tween()
+	for i in 6:
+		tw.tween_property(camera, "offset", Vector2(randf_range(-14, 14), randf_range(-14, 14)), 0.04)
+	tw.tween_property(camera, "offset", Vector2.ZERO, 0.05)
 
 
 # --- Récord ----------------------------------------------------------------

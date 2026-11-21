@@ -7,11 +7,13 @@ const VIEW := Color(1, 1, 1, 0.8)
 const HORSE := Color("#ff4f9a")
 const DIAMOND := Color("#ffe066")
 const RADAR := Color(1, 1, 1, 0.25)
+const SHARK := Color("#ff3b3b")
 
 var world_map: WorldMap
 var horse: Node2D
 var diamonds_root: Node2D
 var camera: Camera2D
+var sharks: Array = []
 
 
 func _process(_delta: float) -> void:
@@ -45,5 +47,10 @@ func _draw() -> void:
 				continue
 			if d.global_position.distance_to(hp) <= RADAR_RANGE:
 				draw_circle(d.global_position * k, 3.0, DIAMOND)
+
+	# Tiburones cercanos en rojo, para poder esquivarlos
+	for sh in sharks:
+		if is_instance_valid(sh) and sh.global_position.distance_to(hp) <= RADAR_RANGE:
+			draw_circle(sh.global_position * k, 3.5, SHARK)
 
 	draw_circle(hp * k, 4.0, HORSE)
