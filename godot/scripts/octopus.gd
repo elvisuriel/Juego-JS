@@ -19,6 +19,7 @@ var _t := 0.0
 var _cool := 0.0
 var _target := Vector2.ZERO
 var _squish := 0.0
+var stunned_left := 0.0           # aturdido por una burbuja: no se mueve ni echa tinta
 
 
 func _ready() -> void:
@@ -32,6 +33,11 @@ func _process(delta: float) -> void:
 	_cool = maxf(_cool - delta, 0.0)
 	_squish = maxf(_squish - delta * 2.0, 0.0)
 
+	if stunned_left > 0.0:
+		stunned_left -= delta
+		queue_redraw()
+		return
+
 	var to_target := _target - global_position
 	if to_target.length() < 40.0:
 		_pick_target()
@@ -44,6 +50,13 @@ func _process(delta: float) -> void:
 		_squish = 1.0
 		inked.emit(self)
 	queue_redraw()
+
+
+## Le pegó una burbuja: queda aturdido y tarda en volver a echar tinta.
+func hit() -> void:
+	stunned_left = 3.0
+	_cool = maxf(_cool, 8.0)
+	_squish = 1.0
 
 
 func _pick_target() -> void:

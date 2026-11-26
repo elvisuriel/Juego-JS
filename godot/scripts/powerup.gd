@@ -1,20 +1,25 @@
 class_name PowerUp
 extends Area2D
-## Burbuja con un poder: turbo, escudo, corazón o reloj.
+## Burbuja con un poder: turbo, escudo, corazón, reloj, triple disparo
+## u onda expansiva (atrapa a los tiburones cercanos).
 
-enum Kind { TURBO, SHIELD, HEART, CLOCK }
+enum Kind { TURBO, SHIELD, HEART, CLOCK, TRIPLE, WAVE }
 
 const COLORS := {
 	Kind.TURBO: Color("#ffb020"),
 	Kind.SHIELD: Color("#5ee0ff"),
 	Kind.HEART: Color("#ff4f6d"),
 	Kind.CLOCK: Color("#b48cff"),
+	Kind.TRIPLE: Color("#5cf08a"),
+	Kind.WAVE: Color("#ff5fd2"),
 }
 const NAMES := {
 	Kind.TURBO: "¡TURBO!",
 	Kind.SHIELD: "¡ESCUDO!",
 	Kind.HEART: "¡+1 VIDA!",
 	Kind.CLOCK: "¡+10 SEGUNDOS!",
+	Kind.TRIPLE: "¡TRIPLE DISPARO!",
+	Kind.WAVE: "¡ONDA EXPANSIVA!",
 }
 const RADIUS := 34.0
 
@@ -67,6 +72,15 @@ static func draw_icon(ci: CanvasItem, k: int, at: Vector2, s: float, c: Color) -
 				var t := TAU * i / 24.0
 				pts.append(at + Vector2(16.0 * pow(sin(t), 3), -(13.0 * cos(t) - 5.0 * cos(2 * t) - 2.0 * cos(3 * t) - cos(4 * t))) * 1.1 * s)
 			ci.draw_colored_polygon(pts, c)
+		Kind.TRIPLE:
+			for a in [-0.45, 0.0, 0.45]:
+				var p := at + Vector2.from_angle(-PI * 0.5 + a) * 11.0 * s
+				ci.draw_circle(p + Vector2(0, 4) * s, 7.0 * s, c)
+				ci.draw_circle(p + Vector2(-2, 2) * s, 2.2 * s, Color(1, 1, 1, 0.8))
+		Kind.WAVE:
+			ci.draw_circle(at, 5.0 * s, c)
+			for r in [10.0, 16.0]:
+				ci.draw_arc(at, r * s, 0, TAU, 28, c, 3.2 * s, true)
 		Kind.CLOCK:
 			ci.draw_circle(at, 17.0 * s, c)
 			ci.draw_arc(at, 17.0 * s, 0, TAU, 24, Color.WHITE, 2.5 * s, true)

@@ -20,6 +20,11 @@ var in_hideout := false       # dentro de un bosque de algas
 var turbo_left := 0.0
 var shield := false
 var joystick: Control         # si existe, manda sobre el dedo/mouse
+var world: SeaWorld           # mundo 3D: convierte el dedo y el joystick
+var facing := Vector2.RIGHT   # hacia dónde dispara
+var triple_left := 0.0        # poder de triple disparo
+## Si devuelve true para un punto, ese toque es de un botón y no mueve al caballito.
+var ui_block: Callable
 
 var _smile_left := 0.0
 var _pressing := false
@@ -39,6 +44,8 @@ func _ready() -> void:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and ui_block.is_valid() and ui_block.call(event.position):
+			return
 		_pressing = event.pressed
 
 
@@ -50,6 +57,7 @@ func _process(delta: float) -> void:
 			sprite.frame = 0
 
 	turbo_left = maxf(turbo_left - delta, 0.0)
+	triple_left = maxf(triple_left - delta, 0.0)
 
 	var mod := Color.WHITE
 	if _hurt_left > 0.0:
@@ -69,13 +77,22 @@ func _process(delta: float) -> void:
 	var step := Vector2.ZERO
 	if joystick:
 		var v: Vector2 = joystick.vector
-		step = v * top * f
 		if absf(v.x) > 0.1:
 			sprite.flip_h = v.x < 0.0
+		# La cámara está en diagonal: "arriba" en pantalla no es "arriba" en el mapa
+		if world:
+			v = world.screen_dir_to_world(v)
+		if v.length() > 0.2:
+			facing = v.normalized()
+		step = v * top * f
 	elif not (_touch_mode and not _pressing):
-		var dist := get_global_mouse_position() - global_position
-		if absf(dist.x) > 4.0:
-			sprite.flip_h = dist.x < 0.0
+		var pointer := world.pointer_world() if world else get_global_mouse_position()
+		var dist := pointer - global_position
+		if dist.length() > 40.0:
+			facing = dist.normalized()
+		var sx := world.screen_x(dist) if world else dist.x
+		if absf(sx) > 4.0:
+			sprite.flip_h = sx < 0.0
 		var follow := FOLLOW * (1.6 if turbo_left > 0.0 else 1.0)
 		step = dist * (1.0 - pow(1.0 - follow, f))
 		step = step.limit_length(top * f)

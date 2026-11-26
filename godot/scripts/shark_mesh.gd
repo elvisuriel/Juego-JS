@@ -19,6 +19,27 @@ const WIDTH := 0.26
 static var _mesh: ArrayMesh
 static var _shader: Shader
 
+## Tiburón de caricatura hecho por Elvis en Tripo (se usa en vez del de código).
+const USE_TRIPO := true
+const TRIPO_MESH := "res://assets/models/shark_tripo.res"
+const TRIPO_TEX := "res://assets/models/shark_tripo.png"
+const CreatureShader := preload("res://shaders/creature.gdshader")
+
+
+static func model() -> Mesh:
+	return load(TRIPO_MESH) if USE_TRIPO else build()
+
+
+static func make_material() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	if USE_TRIPO:
+		m.shader = CreatureShader
+		m.set_shader_parameter("albedo_tex", load(TRIPO_TEX))
+		m.set_shader_parameter("wave", 0.26)
+	else:
+		m.shader = shader()
+	return m
+
 
 static func build() -> ArrayMesh:
 	if _mesh:

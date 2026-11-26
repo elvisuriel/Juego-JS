@@ -1,14 +1,15 @@
 extends Control
 ## Menú de inicio: Jugar, Tienda (skins con diamantes), Récords y Ajustes.
-## De fondo, el mar con burbujas, el caballito y un tiburón 3D nadando.
+## De fondo, el mar 3D (arrecife de coral) con el caballito y un tiburón nadando.
 
 const GAME_SCENE := "res://scenes/main.tscn"
-const HORSE_TEXTURE := preload("res://assets/images/horse.png")
 const MUSIC := preload("res://assets/sounds/musicLoop.mp3")
 const SIZE := Vector2(1136, 640)
 
 var _content: Control
-var _horse: Sprite2D
+var _horse: Node3D
+var _world: SeaWorld
+const MENU_SPOT := Vector2(50, 17)      # arrecife de coral (unidades)
 var _bank_label: Label
 var _music: AudioStreamPlayer
 var _t := 0.0
@@ -19,28 +20,18 @@ func _ready() -> void:
 	theme = UI.theme()
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 
-	var bg := ColorRect.new()
-	bg.color = WorldMap.WATER
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(bg)
-
-	var scene := Node2D.new()
-	add_child(scene)
-	var bubbles: Node2D = preload("res://scripts/bubbles.gd").new()
-	scene.add_child(bubbles)
-	bubbles.setup(SIZE)
+	# El mismo mar del juego, de fondo
+	_world = SeaWorld.new()
+	add_child(_world)
+	_world.build(Game.WORLD_SIZE)
+	_world.look_at_point(MENU_SPOT)
 
 	var shark := Shark.new()
-	shark.bounds = Rect2(Vector2(-150, 120), SIZE + Vector2(300, -120))
-	shark.position = Vector2(900, 380)
-	scene.add_child(shark)
-
-	_horse = Sprite2D.new()
-	_horse.texture = HORSE_TEXTURE
-	_horse.hframes = 2
-	_horse.position = Vector2(190, 360)
-	_horse.scale = Vector2.ONE * 1.4
-	scene.add_child(_horse)
+	shark.world = _world
+	var spot_px := MENU_SPOT / SeaWorld.S
+	shark.bounds = Rect2(spot_px - Vector2(900, 700), Vector2(1800, 1400))
+	shark.position = spot_px + Vector2(500, 200)
+	add_child(shark)
 
 	_bank_label = UI.label("", 28, UI.GOLD)
 	_bank_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -67,13 +58,21 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_t += delta
-	_horse.position.y = 360 + sin(_t * 1.6) * 14.0
-	_horse.rotation = sin(_t * 1.1) * 0.06
+	# La cámara pasea despacio por el arrecife
+	_world.look_at_point(MENU_SPOT + Vector2(sin(_t * 0.07) * 4.0, cos(_t * 0.05) * 3.0))
+	if _horse:
+		# Grande a la izquierda de la pantalla, mirando hacia el menú
+		_horse.global_position = _world.screen_to_swim(Vector2(200, 360 + sin(_t * 1.6) * 14.0))
+		var right := _world.camera.global_basis.x
+		_horse.rotation = Vector3(0.0, atan2(-right.z, right.x) + sin(_t * 0.6) * 0.5, sin(_t * 1.1) * 0.06)
 
 
 func _refresh() -> void:
 	_bank_label.text = "DIAMANTES: %d" % Game.bank
-	_horse.material = Game.skin_material(Game.skin)
+	if _horse:
+		_horse.queue_free()
+	_horse = SeaWorld.make_seahorse(Game.skin, 2.3)
+	_world.add_child(_horse)
 
 
 func _screen() -> VBoxContainer:
@@ -201,8 +200,8 @@ func _show_shop() -> void:
 	box.add_child(UI.label("TIENDA", 56, UI.GOLD))
 	box.add_child(UI.label("Compra colores con los diamantes que atrapas", 22, Color(1, 1, 1, 0.75)))
 	var grid := GridContainer.new()
-	grid.columns = 3
-	grid.add_theme_constant_override("h_separation", 16)
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 14)
 	grid.add_theme_constant_override("v_separation", 12)
 	for s in Game.SKINS:
 		grid.add_child(_skin_card(s))
@@ -213,18 +212,9 @@ func _show_shop() -> void:
 func _skin_card(s: Dictionary) -> Control:
 	var card := VBoxContainer.new()
 	card.add_theme_constant_override("separation", 4)
-	card.custom_minimum_size = Vector2(230, 0)
+	card.custom_minimum_size = Vector2(195, 0)
 
-	var preview := Control.new()
-	preview.custom_minimum_size = Vector2(230, 90)
-	var spr := Sprite2D.new()
-	spr.texture = HORSE_TEXTURE
-	spr.hframes = 2
-	spr.scale = Vector2.ONE * 0.55
-	spr.position = Vector2(115, 45)
-	spr.material = Game.skin_material(s.id)
-	preview.add_child(spr)
-	card.add_child(preview)
+	card.add_child(_skin_preview(s.id))
 
 	var owned: bool = Game.owned.has(s.id)
 	var in_use: bool = Game.skin == s.id
@@ -235,12 +225,35 @@ func _skin_card(s: Dictionary) -> Control:
 		text = "Usar %s" % s.name
 	else:
 		text = "%s: %d" % [s.name, s.price]
-	var b := UI.button(text, _skin_pressed.bind(s), 230)
-	b.add_theme_font_size_override("font_size", 22)
+	var b := UI.button(text, _skin_pressed.bind(s), 195)
+	b.add_theme_font_size_override("font_size", 19)
 	b.custom_minimum_size.y = 50
 	b.disabled = in_use or (not owned and Game.bank < s.price)
 	card.add_child(b)
 	return card
+
+
+## Caballito 3D girando con esa skin.
+func _skin_preview(id: String) -> Control:
+	var box := SubViewportContainer.new()
+	box.custom_minimum_size = Vector2(195, 96)
+	box.stretch = true
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vp := SubViewport.new()
+	vp.transparent_bg = true
+	vp.own_world_3d = true
+	vp.msaa_3d = Viewport.MSAA_2X
+	box.add_child(vp)
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.size = 1.9
+	vp.add_child(cam)
+	cam.look_at_from_position(Vector3(0, 0.4, 4), Vector3.ZERO, Vector3.UP)
+	var h := SeaWorld.make_seahorse(id, 1.0)
+	vp.add_child(h)
+	var tw := h.create_tween().set_loops()
+	tw.tween_property(h, "rotation:y", TAU, 4.0).from(0.0)
+	return box
 
 
 func _skin_pressed(s: Dictionary) -> void:

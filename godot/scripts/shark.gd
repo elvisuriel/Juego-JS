@@ -8,6 +8,7 @@ extends Node2D
 
 signal bitten(shark: Shark)
 signal chase_started(shark: Shark)
+signal trapped(shark: Shark)
 
 const VIEW_PX := 384              # resolución del render 3D
 const SCREEN_SIZE := 350.0        # tamaño en pantalla (px)
@@ -20,6 +21,10 @@ const TURN := 0.05                # qué tan rápido gira
 const MOUTH_OFFSET := 115.0       # distancia del centro a la boca (px)
 const BITE_RADIUS := 55.0
 const MARGIN := 120.0
+
+const TRAP_TIME := 6.0            # segundos atrapado en la burbuja
+const HIT_RADIUS := 95.0          # qué tan fácil es darle con una burbuja (px)
+const HP := {Kind.NORMAL: 2, Kind.BIG: 4, Kind.FAST: 1}
 
 const DASH_SPEED := 12.0
 const WINDUP_TIME := 0.7
@@ -34,6 +39,13 @@ var chase_speed := CHASE_SPEED
 var horse: Node2D
 var bounds := Rect2(0, 0, 3400, 2000)
 var hunting := false              # solo persigue mientras se juega
+## Si se da, el tiburón nada directo en el mundo 3D (juego); si no, se
+## dibuja en 2D con su propio SubViewport (menú).
+var world: SeaWorld
+var hp := 2
+var trapped_left := 0.0           # > 0: atrapado, no muerde
+var _flash := 0.0
+var _bubble: MeshInstance3D
 
 var _mode := Mode.PATROL
 var _mode_time := 0.0
@@ -56,13 +68,22 @@ func _ready() -> void:
 			chase_speed *= 0.72
 		Kind.FAST:
 			_size = 0.85
-	_build_view()
+	hp = HP[kind]
+	if world:
+		_build_3d()
+	else:
+		_build_view()
 	_pick_target()
 
 
 func _process(delta: float) -> void:
 	var f := delta * 60.0
 	_mode_time += delta
+	_flash = maxf(_flash - delta, 0.0)
+	_material.set_shader_parameter("flash", _flash * 4.0)
+	if trapped_left > 0.0:
+		_process_trapped(delta, f)
+		return
 
 	var to_horse := Vector2.INF
 	if horse:
@@ -127,12 +148,69 @@ func _process(delta: float) -> void:
 	_roll = lerpf(_roll, clampf(-turn_rate * 18.0, -0.6, 0.6), 0.1)
 	_pivot.rotation = Vector3(_roll, _yaw, 0.0)
 	_material.set_shader_parameter("swim_speed", 9.0 if _mode == Mode.WINDUP else 2.5 + _vel.length() * 1.3)
-	_sprite.position = Vector2(randf_range(-3, 3), randf_range(-3, 3)) if _mode == Mode.WINDUP else Vector2.ZERO
-	queue_redraw()
+	var shake := Vector2(randf_range(-3, 3), randf_range(-3, 3)) if _mode == Mode.WINDUP else Vector2.ZERO
+	if world:
+		_pivot.position = Vector3((global_position.x + shake.x) * 0.01, SeaWorld.SWIM_Y + sin(_mode_time * 1.7) * 0.06, (global_position.y + shake.y) * 0.01)
+	else:
+		_sprite.position = shake
+		queue_redraw()
 
 	if hunting and (_mode == Mode.CHASE or _mode == Mode.DASH) and horse:
 		if mouth_position().distance_to(horse.global_position) < BITE_RADIUS * _size:
 			bitten.emit(self)
+
+
+## Atrapado: flota despacio dentro de la burbuja, dando vueltas.
+func _process_trapped(delta: float, f: float) -> void:
+	trapped_left -= delta
+	_vel = _vel.lerp(Vector2.ZERO, 1.0 - pow(0.95, f))
+	global_position += _vel * f
+	global_position = global_position.clamp(bounds.position + Vector2(MARGIN, MARGIN), bounds.end - Vector2(MARGIN, MARGIN))
+	_yaw += delta * 1.2
+	_roll = sin(_mode_time * 3.0) * 0.4
+	_pivot.rotation = Vector3(_roll, _yaw, 0.0)
+	_material.set_shader_parameter("swim_speed", 12.0)
+	var wobble := 1.0 + sin(_mode_time * 6.0) * 0.04
+	if world:
+		_pivot.position = Vector3(global_position.x * 0.01, SeaWorld.SWIM_Y + 0.3 + sin(_mode_time * 2.0) * 0.12, global_position.y * 0.01)
+		if _bubble:
+			_bubble.visible = true
+			_bubble.scale = Vector3.ONE * wobble * 1.6 * _size
+	if trapped_left <= 0.0:
+		# Se escapa: rompe la burbuja y se aleja un rato
+		hp = HP[kind]
+		if _bubble:
+			_bubble.visible = false
+		_set_mode(Mode.REST)
+		_mode_time = -2.0
+
+
+func is_trapped() -> bool:
+	return trapped_left > 0.0
+
+
+## Le pega una burbuja. Devuelve true si con eso quedó atrapado.
+func hit(dir: Vector2, damage := 1) -> bool:
+	if trapped_left > 0.0:
+		return false
+	hp -= damage
+	_flash = 0.25
+	_vel += dir.normalized() * 7.0
+	if hp <= 0:
+		trap(TRAP_TIME)
+		return true
+	# Se enoja: va por el caballito
+	if not is_chasing() and hunting:
+		_set_mode(Mode.CHASE)
+	return false
+
+
+func trap(t: float) -> void:
+	var was := trapped_left > 0.0
+	trapped_left = maxf(trapped_left, t)
+	_mode_time = 0.0
+	if not was:
+		trapped.emit(self)
 
 
 func is_chasing() -> bool:
@@ -161,7 +239,14 @@ func _pick_target() -> void:
 	_target = Vector2(randf_range(r.position.x, r.end.x), randf_range(r.position.y, r.end.y))
 
 
+func _exit_tree() -> void:
+	if world and is_instance_valid(_pivot):
+		_pivot.queue_free()
+
+
 func _draw() -> void:
+	if world:
+		return
 	# Sombra en el fondo para que se sienta la profundidad
 	draw_set_transform(Vector2(14, 40) * _size, _vel.angle(), Vector2(1.0, 0.3))
 	draw_circle(Vector2.ZERO, 120.0 * _size, Color(0, 0.08, 0.15, 0.18))
@@ -169,6 +254,38 @@ func _draw() -> void:
 
 
 # --- Render 3D --------------------------------------------------------------
+
+func _make_material() -> void:
+	_material = SharkMesh.make_material()
+	_material.set_shader_parameter("phase", randf() * TAU)
+	match kind:
+		Kind.BIG:
+			_material.set_shader_parameter("tint", Vector3(0.72, 0.78, 0.82))
+		Kind.FAST:
+			_material.set_shader_parameter("tint", Vector3(0.8, 1.0, 1.25))
+
+
+## En el juego: el modelo va directo en el mar 3D (sin SubViewport).
+func _build_3d() -> void:
+	_pivot = Node3D.new()
+	world.add_child(_pivot)
+	_make_material()
+	var mi := MeshInstance3D.new()
+	mi.mesh = SharkMesh.model()
+	mi.material_override = _material
+	mi.scale = Vector3.ONE * _size
+	_pivot.add_child(mi)
+	world.add_shark_shadow(self, _size)
+	# Burbuja que lo atrapa (oculta hasta que lo atrapan)
+	_bubble = MeshInstance3D.new()
+	_bubble.mesh = SeaMeshes.sphere(1.0, 24)
+	_bubble.material_override = world.bubble_material(Color(0.7, 0.95, 1.0, 1.0), 0.12, 0.9)
+	_bubble.scale = Vector3.ONE
+	_bubble.visible = false
+	var holder := Node3D.new()
+	_pivot.add_child(holder)
+	holder.add_child(_bubble)
+	_bubble.scale = Vector3.ONE * 1.6 * _size
 
 func _build_view() -> void:
 	var vp := SubViewport.new()
@@ -188,17 +305,10 @@ func _build_view() -> void:
 	_pivot = Node3D.new()
 	vp.add_child(_pivot)
 
-	_material = ShaderMaterial.new()
-	_material.shader = SharkMesh.shader()
-	_material.set_shader_parameter("phase", randf() * TAU)
-	match kind:
-		Kind.BIG:
-			_material.set_shader_parameter("tint", Vector3(0.72, 0.78, 0.82))
-		Kind.FAST:
-			_material.set_shader_parameter("tint", Vector3(0.8, 1.0, 1.25))
+	_make_material()
 
 	var mi := MeshInstance3D.new()
-	mi.mesh = SharkMesh.build()
+	mi.mesh = SharkMesh.model()
 	mi.material_override = _material
 	_pivot.add_child(mi)
 

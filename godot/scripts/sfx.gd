@@ -53,5 +53,17 @@ static func level_up() -> AudioStreamWAV:
 	return _tones("level", [[392, 0.1], [523, 0.1], [659, 0.1], [784, 0.25]], "square", 0.3)
 
 
+static func shoot() -> AudioStreamWAV:
+	return _tones("shoot", [[380, 0.03], [620, 0.04], [900, 0.05]], "sine", 0.45)
+
+
+static func trap() -> AudioStreamWAV:
+	return _tones("trap", [[660, 0.06], [880, 0.06], [1320, 0.14]], "sine", 0.5)
+
+
+static func wave() -> AudioStreamWAV:
+	return _tones("wave", [[220, 0.06], [330, 0.06], [440, 0.06], [660, 0.2]], "saw", 0.3)
+
+
 static func click() -> AudioStreamWAV:
 	return _tones("click", [[700, 0.04]], "sine", 0.4)

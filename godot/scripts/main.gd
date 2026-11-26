@@ -1,25 +1,35 @@
 extends Node2D
-## Atlantis: explora el mapa y recoge todos los diamantes antes de que
-## se acabe el tiempo, sin que te atrapen los tiburones.
-## Cada nivel es más grande y difícil; las vidas y los puntos pasan
+## Atlantis: explora el mar abierto en 3D y recoge todos los diamantes
+## antes de que se acabe el tiempo, sin que te atrapen los tiburones.
+## La lógica sigue en 2D (px); SeaWorld lo dibuja todo en 3D en diagonal.
+## Cada nivel trae más diamantes y enemigos; las vidas y los puntos pasan
 ## de un nivel al siguiente.
 
 const POINTS_PER_DIAMOND := 100
 const POINTS_PER_SECOND_LEFT := 50
 const MAX_PLACEMENT_TRIES := 500
-const MIN_DIAMOND_GAP := 120.0
+const MIN_DIAMOND_GAP := 400.0
+const EDGE := 300.0                  # nada aparece pegado a las paredes
 const SAFE_DISTANCE := 900.0         # enemigos lejos del inicio
 const POWERUP_RESPAWN := 12.0        # segundos entre power-ups nuevos
 const TURBO_TIME := 6.0
+# Disparo de burbujas
+const SHOT_SPEED := 17.0             # px por frame
+const SHOT_RANGE := 780.0
+const SHOT_COOLDOWN := 0.22
+const MAX_ENERGY := 5
+const ENERGY_RECHARGE := 1.1         # segundos por cada disparo que se recarga
+const TRIPLE_TIME := 8.0
+const WAVE_RADIUS := 650.0
+const TRAP_POINTS := 50
+const SHOT_COLOR := Color("#7fe8ff")
+const AttackButtonScript := preload("res://scripts/attack_button.gd")
 const ALERT_COOLDOWN := 1.5
 
 const DiamondScene := preload("res://scenes/diamond.tscn")
-const EXPLOSION_TEXTURE := preload("res://assets/images/explosion.png")
 const LivesScript := preload("res://scripts/lives.gd")
 const JoystickScript := preload("res://scripts/joystick.gd")
 const InkScript := preload("res://scripts/ink.gd")
-const FISHES_TEXTURE := preload("res://assets/images/fishes.png")
-const MOLLUSK_TEXTURE := preload("res://assets/images/mollusk.png")
 const MENU_SCENE := "res://scenes/menu.tscn"
 
 enum State { WAITING, PLAYING, ENDED }
@@ -34,7 +44,13 @@ var caught := 0
 var lives := 3
 var end_reason := ""
 
-var _swimmers: Array[Sprite2D] = []
+var world: SeaWorld
+var _region_label: Label
+var energy := float(MAX_ENERGY)
+var trapped_count := 0
+var _shot_cool := 0.0
+var _shots: Array[Dictionary] = []
+var _attack: Control
 var _sharks: Array[Shark] = []
 var _octopi: Array[Octopus] = []
 var _hideouts: Array[Hideout] = []
@@ -50,13 +66,9 @@ var _status: Control
 var _pause_layer: Control
 var _joystick: Control
 
-@onready var world_map: WorldMap = $Map
-@onready var bubbles: Node2D = $Bubbles
-@onready var decor_root: Node2D = $Decor
 @onready var diamonds_root: Node2D = $Diamonds
 @onready var effects_root: Node2D = $Effects
 @onready var horse: Area2D = $Horse
-@onready var camera: Camera2D = $Horse/Camera
 @onready var game_timer: Timer = $GameTimer
 @onready var music: AudioStreamPlayer = $Music
 @onready var pop: AudioStreamPlayer = $Pop
@@ -76,7 +88,6 @@ func _ready() -> void:
 	cfg = Game.level_config(Game.level)
 	world_size = cfg.world
 	amount_diamonds = cfg.diamonds
-	time_left = cfg.time
 	score = Game.run_score
 	lives = Game.run_lives
 
@@ -86,22 +97,22 @@ func _ready() -> void:
 	if not Game.sound_on:
 		pop.volume_db = -80.0
 
-	var rng := RandomNumberGenerator.new()
-	rng.randomize()
-	world_map.generate(world_size, rng)
-	bubbles.setup(world_size)
+	world = SeaWorld.new()
+	add_child(world)
+	world.build(world_size)
 
-	horse.position = world_size / 2.0
+	# Se empieza en la Llanura de Arena, en el centro del mar
+	horse.position = SeaWorld.REGIONS[0].center / SeaWorld.S
 	horse.bounds = Rect2(Vector2.ZERO, world_size)
-	camera.limit_left = 0
-	camera.limit_top = 0
-	camera.limit_right = int(world_size.x)
-	camera.limit_bottom = int(world_size.y)
-	camera.reset_smoothing()
+	horse.world = world
+	horse.visible = false          # lo dibuja el mundo 3D
+	world.set_horse(horse)
+	diamonds_root.visible = false
+	world.region_changed.connect(_on_region_changed)
 
-	_spawn_decor()
 	_spawn_hideouts()
 	_spawn_diamonds()
+	time_left = _level_time()
 	_spawn_powerups_root()
 	for i in cfg.powerups:
 		_spawn_powerup()
@@ -109,14 +120,14 @@ func _ready() -> void:
 	_spawn_octopi()
 	_build_hud()
 
-	minimap.world_map = world_map
+	minimap.world = world
 	minimap.horse = horse
 	minimap.diamonds_root = diamonds_root
-	minimap.camera = camera
 	minimap.sharks = _sharks
 	minimap.hideouts = _hideouts
 	minimap.octopi = _octopi
 
+	horse.ui_block = _is_ui_point
 	horse.diamond_caught.connect(_on_diamond_caught)
 	horse.powerup_caught.connect(_on_powerup_caught)
 	game_timer.timeout.connect(_on_timer_tick)
@@ -134,6 +145,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	# En móvil el toque llega emulado como clic del mouse
 	if event is InputEventMouseButton and event.pressed and state == State.WAITING:
 		_start_game()
+		return
+	# En PC: espacio o clic derecho disparan
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE:
+		_shoot()
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		_shoot()
+
+
+func _is_ui_point(p: Vector2) -> bool:
+	return _attack != null and _attack.has_screen_point(p)
 
 
 func _notification(what: int) -> void:
@@ -144,14 +165,6 @@ func _notification(what: int) -> void:
 
 
 func _process(delta: float) -> void:
-	var f := delta * 60.0
-	for s in _swimmers:
-		s.position.x += s.get_meta("vel") * f
-		if s.position.x < -400.0 or s.position.x > world_size.x + 400.0:
-			var from_left: bool = s.get_meta("vel") > 0.0
-			s.position.x = -350.0 if from_left else world_size.x + 350.0
-			s.position.y = randf_range(80, world_size.y - 80)
-
 	var inside := false
 	for h in _hideouts:
 		h.occupied = h.contains(horse.global_position)
@@ -161,6 +174,7 @@ func _process(delta: float) -> void:
 	_alert_cooldown = maxf(_alert_cooldown - delta, 0.0)
 
 	if state == State.PLAYING:
+		_update_shots(delta)
 		_powerup_timer += delta
 		if _powerup_timer > POWERUP_RESPAWN:
 			_powerup_timer = 0.0
@@ -198,7 +212,7 @@ func _on_diamond_caught(diamond: Area2D) -> void:
 	if state != State.PLAYING or diamond.is_queued_for_deletion():
 		return
 
-	_spawn_explosion(diamond.position)
+	world.burst(diamond.position, SeaWorld.GEM_COLORS[diamond.get_node("Sprite").frame])
 	diamond.queue_free()
 
 	horse.smile()
@@ -228,8 +242,12 @@ func _on_powerup_caught(p: Area2D) -> void:
 			lives = mini(lives + 1, Game.MAX_LIVES)
 		PowerUp.Kind.CLOCK:
 			time_left += 10
+		PowerUp.Kind.TRIPLE:
+			horse.triple_left = TRIPLE_TIME
+		PowerUp.Kind.WAVE:
+			_wave()
 	_show_toast(PowerUp.NAMES[pu.kind], PowerUp.COLORS[pu.kind])
-	_spawn_explosion(pu.position)
+	world.burst(pu.position, PowerUp.COLORS[pu.kind])
 	pu.queue_free()
 	_play(Sfx.powerup())
 	Game.vibrate(40)
@@ -237,7 +255,7 @@ func _on_powerup_caught(p: Area2D) -> void:
 
 
 func _on_shark_bite(shark: Shark) -> void:
-	if state != State.PLAYING or horse.is_invulnerable():
+	if state != State.PLAYING or horse.is_invulnerable() or shark.is_trapped():
 		return
 
 	var lost: bool = horse.hurt(shark.global_position)
@@ -260,6 +278,101 @@ func _on_shark_bite(shark: Shark) -> void:
 	if lives <= 0:
 		end_reason = "¡TE ATRAPÓ UN TIBURÓN!"
 		_finish_game(false)
+
+
+# --- Disparo de burbujas ------------------------------------------------------
+
+func _shoot() -> void:
+	if state != State.PLAYING or get_tree().paused or energy < 1.0 or _shot_cool > 0.0:
+		return
+	energy -= 1.0
+	_shot_cool = SHOT_COOLDOWN
+	var dir: Vector2 = horse.facing
+	var angles := [0.0]
+	if horse.triple_left > 0.0:
+		angles = [-0.26, 0.0, 0.26]
+	var color: Color = PowerUp.COLORS[PowerUp.Kind.TRIPLE] if horse.triple_left > 0.0 else SHOT_COLOR
+	for a in angles:
+		var d := dir.rotated(a)
+		_shots.append({
+			"pos": horse.global_position + d * 70.0,
+			"vel": d * SHOT_SPEED,
+			"dist": 0.0,
+			"view": world.add_shot(color),
+			"color": color,
+		})
+	_play(Sfx.shoot(), randf_range(0.95, 1.1))
+	Game.vibrate(15)
+
+
+func _update_shots(delta: float) -> void:
+	var f := delta * 60.0
+	_shot_cool = maxf(_shot_cool - delta, 0.0)
+	energy = minf(energy + delta / ENERGY_RECHARGE, MAX_ENERGY)
+	if _attack:
+		_attack.energy = energy
+		_attack.triple = horse.triple_left > 0.0
+	for i in range(_shots.size() - 1, -1, -1):
+		var sh: Dictionary = _shots[i]
+		var step: Vector2 = sh.vel * f
+		sh.pos += step
+		sh.dist += step.length()
+		var view: Node3D = sh.view
+		view.global_position = SeaWorld.to3(sh.pos, SeaWorld.SWIM_Y - 0.1)
+		var hit := false
+		for shark in _sharks:
+			if shark.is_trapped():
+				continue
+			if sh.pos.distance_to(shark.global_position) < Shark.HIT_RADIUS * shark._size:
+				hit = true
+				if shark.hit(sh.vel):
+					_on_shark_trapped_by_player()
+				else:
+					_play(pop.stream, 1.6)
+				break
+		if not hit:
+			for o in _octopi:
+				if sh.pos.distance_to(o.global_position) < 80.0:
+					hit = true
+					o.hit()
+					_play(pop.stream, 1.3)
+					break
+		if hit or sh.dist > SHOT_RANGE or not Rect2(Vector2.ZERO, world_size).has_point(sh.pos):
+			world.burst(sh.pos, sh.color)
+			view.queue_free()
+			_shots.remove_at(i)
+
+
+func _on_shark_trapped_by_player() -> void:
+	trapped_count += 1
+	score += TRAP_POINTS
+	_show_toast("¡TIBURÓN ATRAPADO! +%d" % TRAP_POINTS, SHOT_COLOR)
+	_play(Sfx.trap())
+	Game.vibrate(60)
+	_update_hud()
+
+
+## Onda expansiva: atrapa a todos los tiburones cercanos y aturde pulpos.
+func _wave() -> void:
+	var hp := horse.global_position
+	world.wave_fx(hp, WAVE_RADIUS, PowerUp.COLORS[PowerUp.Kind.WAVE])
+	_play(Sfx.wave())
+	Game.vibrate(120)
+	var n := 0
+	for shark in _sharks:
+		if not shark.is_trapped() and shark.global_position.distance_to(hp) < WAVE_RADIUS:
+			shark.trap(Shark.TRAP_TIME)
+			n += 1
+	for o in _octopi:
+		if o.global_position.distance_to(hp) < WAVE_RADIUS:
+			o.hit()
+	if n > 0:
+		trapped_count += n
+		score += TRAP_POINTS * n
+		_update_hud()
+		# Se muestra después del nombre del poder
+		get_tree().create_timer(0.9).timeout.connect(func() -> void:
+			_show_toast("¡%d ATRAPADOS! +%d" % [n, TRAP_POINTS * n], PowerUp.COLORS[PowerUp.Kind.WAVE]))
 
 
 func _on_shark_chase(_shark: Shark) -> void:
@@ -302,7 +415,9 @@ func _finish_game(won: bool) -> void:
 		_play(Sfx.level_up())
 		box.add_child(UI.label("¡NIVEL %d COMPLETADO!" % Game.level, 56, UI.GOLD))
 		box.add_child(UI.label("PUNTOS: %d   ·   bonus de tiempo: %ds" % [score, time_left], 28))
-		box.add_child(UI.label("Siguiente: más tiburones y un mapa más grande", 22, Color(1, 1, 1, 0.75)))
+		if trapped_count > 0:
+			box.add_child(UI.label("Tiburones atrapados: %d" % trapped_count, 24, SHOT_COLOR))
+		box.add_child(UI.label("Siguiente: más diamantes y más tiburones en el mar", 22, Color(1, 1, 1, 0.75)))
 		box.add_child(UI.button("Siguiente nivel", _next_level))
 		box.add_child(UI.button("Menú", _go_menu))
 		return
@@ -310,6 +425,8 @@ func _finish_game(won: bool) -> void:
 	box.add_child(UI.label("GAME OVER", 64))
 	box.add_child(UI.label(end_reason, 30, UI.GOLD))
 	box.add_child(UI.label("PUNTOS: %d   ·   NIVEL %d" % [score, Game.level], 28))
+	if trapped_count > 0:
+		box.add_child(UI.label("Tiburones atrapados: %d" % trapped_count, 24, SHOT_COLOR))
 
 	if Game.qualifies(score):
 		var entry := VBoxContainer.new()
@@ -398,7 +515,7 @@ func _build_hud() -> void:
 	# Poderes activos (turbo con su tiempo, escudo)
 	_status = Control.new()
 	_status.position = Vector2(20, 124)
-	_status.size = Vector2(200, 40)
+	_status.size = Vector2(320, 40)
 	_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_status.draw.connect(_draw_status)
 	hud.add_child(_status)
@@ -415,6 +532,16 @@ func _build_hud() -> void:
 	hud.add_child(_flash)
 	hud.move_child(_flash, 0)
 
+	# Minimapa en rombo abajo a la derecha, con el nombre de la región
+	minimap.position = Vector2(946, 448)
+	minimap.size = Vector2(176, 176)
+	minimap.clip_contents = false
+	_region_label = UI.label("", 20, UI.GOLD)
+	_region_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_region_label.position = Vector2(636, 420)
+	_region_label.size = Vector2(480, 30)
+	hud.add_child(_region_label)
+
 	_toast = UI.label("", 44)
 	_toast.position = Vector2(0, 150)
 	_toast.size = Vector2(1136, 60)
@@ -428,6 +555,13 @@ func _build_hud() -> void:
 		horse.joystick = _joystick
 
 	# Botón de pausa
+	# Botón de disparo (abajo, a la izquierda del minimapa)
+	_attack = AttackButtonScript.new()
+	_attack.position = Vector2(790, 500)
+	_attack.max_energy = MAX_ENERGY
+	_attack.fired.connect(_shoot)
+	hud.add_child(_attack)
+
 	var pause_btn := UI.button("II", _on_pause_pressed, 64)
 	pause_btn.theme = UI.theme()
 	pause_btn.custom_minimum_size = Vector2(64, 60)
@@ -466,6 +600,12 @@ func _draw_status() -> void:
 		_status.draw_rect(Rect2(x + 20, 12, 60, 12), Color(0, 0, 0, 0.35))
 		_status.draw_rect(Rect2(x + 20, 12, w, 12), PowerUp.COLORS[PowerUp.Kind.TURBO])
 		x += 100.0
+	if horse.triple_left > 0.0:
+		var c: Color = PowerUp.COLORS[PowerUp.Kind.TRIPLE]
+		PowerUp.draw_icon(_status, PowerUp.Kind.TRIPLE, Vector2(x, 18), 0.9, c)
+		_status.draw_rect(Rect2(x + 20, 12, 60, 12), Color(0, 0, 0, 0.35))
+		_status.draw_rect(Rect2(x + 20, 12, 60.0 * horse.triple_left / TRIPLE_TIME, 12), c)
+		x += 100.0
 	if horse.shield:
 		PowerUp.draw_icon(_status, PowerUp.Kind.SHIELD, Vector2(x, 18), 0.9, PowerUp.COLORS[PowerUp.Kind.SHIELD])
 
@@ -493,15 +633,40 @@ func _play(stream: AudioStream, pitch := 1.0) -> void:
 
 
 func _shake_camera() -> void:
-	var tw := create_tween()
-	for i in 6:
-		tw.tween_property(camera, "offset", Vector2(randf_range(-14, 14), randf_range(-14, 14)), 0.04)
-	tw.tween_property(camera, "offset", Vector2.ZERO, 0.05)
+	world.shake()
+
+
+func _on_region_changed(i: int) -> void:
+	var r: Dictionary = SeaWorld.REGIONS[i]
+	_region_label.text = r.name
+	if state == State.PLAYING:
+		_show_toast(r.name, Color(1, 1, 1))
+
+
+## Tiempo del nivel: un recorrido aproximado por todos los diamantes
+## (siempre al más cercano) a la velocidad del caballito, con margen.
+func _level_time() -> int:
+	var left: Array[Vector2] = []
+	for d in diamonds_root.get_children():
+		left.append(d.position)
+	var at := horse.position
+	var total := 0.0
+	while not left.is_empty():
+		var best := 0
+		for i in left.size():
+			if at.distance_to(left[i]) < at.distance_to(left[best]):
+				best = i
+		total += at.distance_to(left[best])
+		at = left[best]
+		left.remove_at(best)
+	var secs := total / (9.0 * 60.0) * float(cfg.time_factor) + 15.0
+	return clampi(int(ceil(secs / 5.0) * 5.0), 60, 400)
 
 
 # --- Creación de elementos -------------------------------------------------
 
 func _far_point(margin: float) -> Vector2:
+	margin = maxf(margin, EDGE)
 	var pos := Vector2.ZERO
 	for t in MAX_PLACEMENT_TRIES:
 		pos = Vector2(randf_range(margin, world_size.x - margin), randf_range(margin, world_size.y - margin))
@@ -510,66 +675,54 @@ func _far_point(margin: float) -> Vector2:
 	return pos
 
 
-func _spawn_decor() -> void:
-	# Moluscos quietos que flotan suave
-	for i in 6:
-		var m := Sprite2D.new()
-		m.texture = MOLLUSK_TEXTURE
-		m.position = Vector2(randf_range(100, world_size.x - 100), randf_range(100, world_size.y - 100))
-		decor_root.add_child(m)
-		var tw := create_tween().set_loops()
-		tw.tween_property(m, "position:y", m.position.y - 40.0, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
-		tw.tween_property(m, "position:y", m.position.y, randf_range(2.0, 3.5)).set_trans(Tween.TRANS_SINE)
-
-	# Cardúmenes de fondo (los tiburones van aparte, en 3D)
-	for i in 5:
-		_add_swimmer(FISHES_TEXTURE, randf_range(0.4, 0.9))
-
-
-func _add_swimmer(texture: Texture2D, vel: float) -> void:
-	var s := Sprite2D.new()
-	s.texture = texture
-	s.position = Vector2(randf_range(0, world_size.x), randf_range(80, world_size.y - 80))
-	s.set_meta("vel", vel)
-	decor_root.add_child(s)
-	_swimmers.append(s)
-
-
 func _spawn_hideouts() -> void:
 	var root := Node2D.new()
+	root.visible = false             # se ven en 3D
 	add_child(root)
-	move_child(root, horse.get_index() + 1)
 	var placed: Array[Vector2] = []
 	for i in cfg.hideouts:
 		var pos := Vector2.ZERO
 		for t in MAX_PLACEMENT_TRIES:
-			pos = Vector2(randf_range(250, world_size.x - 250), randf_range(250, world_size.y - 250))
-			if pos.distance_to(horse.position) < 300.0:
+			pos = Vector2(randf_range(EDGE, world_size.x - EDGE), randf_range(EDGE, world_size.y - EDGE))
+			if pos.distance_to(horse.position) < 400.0:
 				continue
-			if placed.any(func(p: Vector2): return p.distance_to(pos) < 500.0):
+			if placed.any(func(p: Vector2): return p.distance_to(pos) < 900.0):
 				continue
 			break
 		placed.append(pos)
 		var h := Hideout.new()
 		h.position = pos
 		root.add_child(h)
+		world.add_hideout(h)
 		_hideouts.append(h)
 
 
+## Punto al azar dentro de una región del mar (px).
+func _point_in_region(r: int) -> Vector2:
+	var pos := Vector2.ZERO
+	for t in MAX_PLACEMENT_TRIES:
+		pos = Vector2(randf_range(EDGE, world_size.x - EDGE), randf_range(EDGE, world_size.y - EDGE))
+		if world.region_at(pos * SeaWorld.S) == r:
+			break
+	return pos
+
+
 func _spawn_diamonds() -> void:
-	var safe_zone := Rect2(horse.position - Vector2(250, 200), Vector2(500, 400))
 	var placed: Array[Vector2] = []
 
 	for i in amount_diamonds:
 		var diamond: Area2D = DiamondScene.instantiate()
-		var s := randf_range(0.5, 0.9)
+		var s := randf_range(0.6, 0.9)
 		diamond.scale = Vector2(s, s)
-		diamond.get_node("Sprite").frame = randi_range(0, 3)
+		var frame := randi_range(0, 3)
+		diamond.get_node("Sprite").frame = frame
 
+		# Repartidos por todas las regiones, para que haya que explorar
+		var region := i % SeaWorld.REGIONS.size()
 		var pos := Vector2.ZERO
-		for t in MAX_PLACEMENT_TRIES:
-			pos = Vector2(randf_range(80, world_size.x - 80), randf_range(80, world_size.y - 80))
-			if safe_zone.has_point(pos):
+		for t in 60:
+			pos = _point_in_region(region)
+			if pos.distance_to(horse.position) < 350.0:
 				continue
 			if placed.any(func(p: Vector2): return p.distance_to(pos) < MIN_DIAMOND_GAP):
 				continue
@@ -578,33 +731,34 @@ func _spawn_diamonds() -> void:
 		diamond.position = pos
 		placed.append(pos)
 		diamonds_root.add_child(diamond)
-
-		# Un brillo suave para que se note al encontrarlo
-		var tw := diamond.create_tween().set_loops()
-		tw.tween_property(diamond, "scale", Vector2.ONE * s * 1.12, 0.6).set_trans(Tween.TRANS_SINE)
-		tw.tween_property(diamond, "scale", Vector2.ONE * s, 0.6).set_trans(Tween.TRANS_SINE)
+		world.add_diamond(diamond, frame)
 
 
 func _spawn_powerups_root() -> void:
 	_powerups_root = Node2D.new()
+	_powerups_root.visible = false
 	add_child(_powerups_root)
-	move_child(_powerups_root, diamonds_root.get_index() + 1)
 
 
 func _spawn_powerup() -> void:
 	var p := PowerUp.new()
 	# El corazón es más raro
 	var roll := randf()
-	if roll < 0.3:
+	if roll < 0.2:
 		p.kind = PowerUp.Kind.TURBO
-	elif roll < 0.6:
+	elif roll < 0.4:
 		p.kind = PowerUp.Kind.SHIELD
-	elif roll < 0.85:
+	elif roll < 0.58:
 		p.kind = PowerUp.Kind.CLOCK
+	elif roll < 0.74:
+		p.kind = PowerUp.Kind.TRIPLE
+	elif roll < 0.88:
+		p.kind = PowerUp.Kind.WAVE
 	else:
 		p.kind = PowerUp.Kind.HEART
-	p.position = Vector2(randf_range(150, world_size.x - 150), randf_range(150, world_size.y - 150))
+	p.position = Vector2(randf_range(EDGE, world_size.x - EDGE), randf_range(EDGE, world_size.y - EDGE))
 	_powerups_root.add_child(p)
+	world.add_powerup(p)
 
 
 func _spawn_sharks() -> void:
@@ -619,15 +773,14 @@ func _spawn_sharks() -> void:
 	for k in kinds:
 		var sh := Shark.new()
 		sh.kind = k
+		sh.world = world
 		sh.chase_speed = cfg.chase_speed
 		sh.horse = horse
 		sh.bounds = Rect2(Vector2.ZERO, world_size)
-		sh.position = _far_point(150)
+		sh.position = _far_point(EDGE)
 		sh.bitten.connect(_on_shark_bite)
 		sh.chase_started.connect(_on_shark_chase)
-		# Por encima de los diamantes, por debajo del caballito
 		add_child(sh)
-		move_child(sh, horse.get_index())
 		_sharks.append(sh)
 
 
@@ -636,22 +789,9 @@ func _spawn_octopi() -> void:
 		var o := Octopus.new()
 		o.horse = horse
 		o.bounds = Rect2(Vector2.ZERO, world_size)
-		o.position = _far_point(200)
+		o.position = _far_point(EDGE)
 		o.inked.connect(_on_inked)
+		o.visible = false
 		add_child(o)
-		move_child(o, horse.get_index())
+		world.add_octopus(o)
 		_octopi.append(o)
-
-
-func _spawn_explosion(at: Vector2) -> void:
-	var fx := Sprite2D.new()
-	fx.texture = EXPLOSION_TEXTURE
-	fx.position = at
-	fx.scale = Vector2.ONE * 0.4
-	effects_root.add_child(fx)
-
-	var tw := create_tween().set_parallel().set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	tw.tween_property(fx, "scale", Vector2.ONE * 0.8, 0.3)
-	tw.tween_property(fx, "scale", Vector2.ONE * 0.4, 0.3).set_delay(0.3)
-	tw.tween_property(fx, "modulate:a", 0.0, 0.6)
-	tw.chain().tween_callback(fx.queue_free)

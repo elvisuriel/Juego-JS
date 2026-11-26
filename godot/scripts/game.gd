@@ -10,6 +10,8 @@ const MAX_LIVES := 5
 
 ## Skins del caballito (el rosa original está en 336°): giro de tono (0-1), saturación, brillo y precio.
 const SKINS := [
+	# El caballito principal: modelo 3D hecho por Elvis en Tripo (ver SeahorseMesh.MODELS)
+	{"id": "cristal", "name": "Cristal", "hue": 0.0, "sat": 1.0, "val": 1.0, "price": 0},
 	{"id": "rosa", "name": "Rosa", "hue": 0.0, "sat": 1.0, "val": 1.0, "price": 0},
 	{"id": "dorado", "name": "Dorado", "hue": 0.2, "sat": 1.0, "val": 1.15, "price": 30},
 	{"id": "azul", "name": "Azul", "hue": 0.65, "sat": 1.0, "val": 1.0, "price": 60},
@@ -21,8 +23,8 @@ const SKINS := [
 # --- Guardado ---
 static var records: Array = []          # [{name, score, level}]
 static var bank := 0                    # diamantes para la tienda
-static var owned: Array = ["rosa"]
-static var skin := "rosa"
+static var owned: Array = ["cristal", "rosa"]
+static var skin := "cristal"
 static var music_on := true
 static var sound_on := true
 static var vibration_on := true
@@ -51,8 +53,15 @@ static func load_data() -> void:
 	if records.is_empty() and old_high > 0:
 		records = [{"name": "RÉCORD", "score": old_high, "level": 1}]
 	bank = cfg.get_value("game", "bank", 0)
-	owned = cfg.get_value("game", "owned", ["rosa"])
-	skin = cfg.get_value("game", "skin", "rosa")
+	owned = cfg.get_value("game", "owned", ["cristal", "rosa"])
+	skin = cfg.get_value("game", "skin", "cristal")
+	# Partidas de antes del caballito 3D: se pasan una vez al Cristal
+	if not owned.has("cristal"):
+		owned.push_front("cristal")
+	if not cfg.get_value("game", "modelo_cristal", false):
+		skin = "cristal"
+	if not owned.has("rosa"):
+		owned.append("rosa")
 	music_on = cfg.get_value("settings", "music", true)
 	sound_on = cfg.get_value("settings", "sound", true)
 	vibration_on = cfg.get_value("settings", "vibration", true)
@@ -66,6 +75,7 @@ static func save() -> void:
 	cfg.set_value("game", "bank", bank)
 	cfg.set_value("game", "owned", owned)
 	cfg.set_value("game", "skin", skin)
+	cfg.set_value("game", "modelo_cristal", true)
 	cfg.set_value("game", "last_name", last_name)
 	cfg.set_value("settings", "music", music_on)
 	cfg.set_value("settings", "sound", sound_on)
@@ -98,20 +108,26 @@ static func new_run() -> void:
 	run_lives = START_LIVES
 
 
-## Dificultad de cada nivel.
+## Tamaño del mar abierto (px). Es el mismo en todos los niveles: lo que
+## cambia es cuántos diamantes y enemigos hay.
+const WORLD_SIZE := Vector2(6400, 6400)
+
+
+## Dificultad de cada nivel. El tiempo lo calcula el juego según qué tan
+## lejos quedaron los diamantes (time_factor: menos = más difícil).
 static func level_config(lvl: int) -> Dictionary:
 	var n := lvl - 1
 	return {
-		"world": Vector2(3400 + 500 * n, 2000 + 300 * n),
-		"diamonds": 25 + 5 * mini(n, 5),
-		"time": 75 + 10 * mini(n, 4),
-		"sharks": mini(3 + n, 9),
+		"world": WORLD_SIZE,
+		"diamonds": 24 + 4 * mini(n, 5),
+		"time_factor": maxf(1.6 - 0.08 * n, 1.2),
+		"sharks": mini(9 + 2 * n, 20),
 		"chase_speed": minf(4.4 + 0.45 * n, 7.2),
-		"big_sharks": 1 if lvl >= 2 else 0,
-		"fast_sharks": mini(maxi(n - 1, 0), 3),
-		"octopus": mini(maxi(n, 0), 3) if lvl >= 2 else 0,
-		"powerups": 5,
-		"hideouts": 6 + n,
+		"big_sharks": mini(1 + n, 4) if lvl >= 2 else 0,
+		"fast_sharks": mini(maxi(n - 1, 0) * 2, 6),
+		"octopus": mini(2 + 2 * n, 8) if lvl >= 2 else 0,
+		"powerups": 14,
+		"hideouts": 16 + 2 * n,
 	}
 
 
